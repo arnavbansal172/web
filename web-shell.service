@@ -1,0 +1,13 @@
+[Unit]
+Description=Python Web Shell Service
+After=network.target
+
+[Service]
+Type=simple
+User=your_user # The user you want the script to run as (NOT root preferably)
+WorkingDirectory=/path/to/your/script_directory
+ExecStart=/usr/bin/python3 /path/to/your/script_directory/your_script_name.py
+Restart=on-failure # Optional: restart if it crashes
+
+[Install]
+WantedBy=multi-user.target
