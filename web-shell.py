@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 
 import http.server
-import socketserver # Keep this import
-import ssl
+import socketserver
 import base64
 import subprocess
 import os
@@ -11,26 +10,31 @@ import socket # For hostname
 import shlex # For safer command splitting
 
 # --- Configuration ---
-HOST = '0.0.0.0'
-PORT = 8443
+HOST = '0.0.0.0' # Listen on all interfaces
+PORT = 5000     # Changed to a common HTTP port
+# WARNING: Hardcoding credentials is not recommended for production.
 USERNAME = "admin"
-PASSWORD = "supersecretpassword"
-CERTFILE = 'server.pem'
+PASSWORD = "supersecretpassword" # Change this!
 
+# !!! WARNING: SSL/HTTPS HAS BEEN REMOVED !!!
+# Credentials will be sent in PLAINTEXT over the network.
+# Only use this version if you understand and accept the security risks.
+# For any sensitive use, SSL is highly recommended.
+# !!! WARNING END !!!
+
+# --- Global State (for CWD) ---
 current_working_directory = os.getcwd()
 
 # Define the threaded HTTP server class
 class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     """Handle requests in a separate thread."""
-    allow_reuse_address = True  # Good for development to reuse address quickly
-    # daemon_threads = True     # Optional: If True, server threads will not block program exit
+    allow_reuse_address = True
 
 class WebShellHandler(http.server.BaseHTTPRequestHandler):
-    # ... (all your WebShellHandler code remains the same) ...
 
     def _send_auth_required(self):
         self.send_response(401)
-        self.send_header('WWW-Authenticate', 'Basic realm="Secure Web Shell"')
+        self.send_header('WWW-Authenticate', 'Basic realm="Web Shell (INSECURE HTTP)"') # Updated realm
         self.send_header('Content-type', 'text/html')
         self.end_headers()
         self.wfile.write(b"<h1>401 Unauthorized</h1><p>Authentication required.</p>")
@@ -62,7 +66,7 @@ class WebShellHandler(http.server.BaseHTTPRequestHandler):
 
     def _get_prompt(self):
         global current_working_directory
-        user = USERNAME # Could use os.getlogin() if script runs as target user
+        user = USERNAME
         host = socket.gethostname()
         home_dir = os.path.expanduser(f"~{user}") if user == os.getlogin() else os.path.expanduser("~")
         norm_cwd = os.path.normpath(current_working_directory)
@@ -85,13 +89,19 @@ class WebShellHandler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
 
             initial_prompt = self._get_prompt()
+            # The JavaScript needs to be aware of the Authorization header for POST
+            # Storing it in a JS variable is one way, though ideally,
+            # for truly stateless requests, it might be better to re-prompt if 401.
+            # For simplicity here, we'll continue to pass it.
+            auth_header_value = self.headers.get("Authorization", "")
+
             html_content = f"""
             <!DOCTYPE html>
             <html lang="en">
             <head>
                 <meta charset="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-                <title>Python Web Shell</title>
+                <title>Python Web Shell (HTTP - Insecure)</title>
                 <style>
                     body {{ font-family: monospace; background-color: #1e1e1e; color: #d4d4d4; margin: 0; padding: 10px; }}
                     #terminal {{ height: calc(100vh - 70px); overflow-y: auto; border: 1px solid #333; padding: 10px; margin-bottom:10px; white-space: pre-wrap; word-wrap: break-word;}}
@@ -121,6 +131,7 @@ class WebShellHandler(http.server.BaseHTTPRequestHandler):
                     const promptSpan = document.getElementById('prompt');
                     let commandHistory = [];
                     let historyIndex = -1;
+                    const storedAuthHeader = "{auth_header_value}"; // Store auth header from GET
 
                     function appendToTerminal(htmlContent, type = 'stdout') {{
                         const line = document.createElement('div');
@@ -150,17 +161,21 @@ class WebShellHandler(http.server.BaseHTTPRequestHandler):
                             commandInput.value = '';
 
                             try {{
-                                const response = await fetch('/', {{
+                                const headers = {{
+                                    'Content-Type': 'application/json'
+                                }};
+                                if (storedAuthHeader) {{ // Add auth header if available
+                                    headers['Authorization'] = storedAuthHeader;
+                                }}
+
+                                const response = await fetch('/', {{ // URL will be http://...
                                     method: 'POST',
-                                    headers: {{
-                                        'Content-Type': 'application/json',
-                                        'Authorization': '{self.headers.get("Authorization")}'
-                                    }},
+                                    headers: headers,
                                     body: JSON.stringify({{ command: command }})
                                 }});
 
                                 if (response.status === 401) {{
-                                    appendToTerminal("Session expired or invalid. Please refresh.", 'stderr');
+                                    appendToTerminal("Authentication failed or session expired. Please refresh the page to re-authenticate.", 'stderr');
                                     commandInput.disabled = true;
                                     return;
                                 }}
@@ -220,7 +235,7 @@ class WebShellHandler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         global current_working_directory
-        if not self._check_auth():
+        if not self._check_auth(): # Authentication still happens
             return
 
         content_length = int(self.headers['Content-Length'])
@@ -316,25 +331,11 @@ class WebShellHandler(http.server.BaseHTTPRequestHandler):
 
 
 def run_server():
-    # Use our custom ThreadedHTTPServer
-    httpd = ThreadedHTTPServer((HOST, PORT), WebShellHandler) # <--- CHANGE HERE
-
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    try:
-        ssl_context.load_cert_chain(certfile=CERTFILE)
-    except FileNotFoundError:
-        print(f"Error: Certificate file '{CERTFILE}' not found.")
-        print("Please generate it using OpenSSL: openssl req -new -x509 -keyout server.pem -out server.pem -days 365 -nodes")
-        return
-    except ssl.SSLError as e:
-        print(f"Error loading SSL certificate: {e}")
-        print(f"Ensure '{CERTFILE}' is a valid certificate and private key pair.")
-        return
-        
-    httpd.socket = ssl_context.wrap_socket(httpd.socket, server_side=True)
-
-    print(f"Serving HTTPS on {HOST}:{PORT}...")
-    print(f"Username: {USERNAME}, Password: {PASSWORD}")
+    # Use ThreadedHTTPServer directly, no SSL
+    httpd = ThreadedHTTPServer((HOST, PORT), WebShellHandler)
+    
+    print(f"Serving HTTP (INSECURE) on {HOST}:{PORT}...") # Updated print
+    print(f"!!! WARNING: Credentials (Username: {USERNAME}, Password: {PASSWORD}) will be sent in PLAINTEXT !!!")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -343,9 +344,5 @@ def run_server():
         httpd.server_close()
 
 if __name__ == '__main__':
-    if not os.path.exists(CERTFILE):
-        print(f"Error: Certificate file '{CERTFILE}' not found.")
-        print("Please generate it first, e.g., with OpenSSL:")
-        print("  openssl req -new -x509 -keyout server.pem -out server.pem -days 365 -nodes")
-    else:
-        run_server()
+    # No need to check for CERTFILE anymore
+    run_server()
